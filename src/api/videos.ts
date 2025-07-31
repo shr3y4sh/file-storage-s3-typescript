@@ -38,15 +38,22 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
 		throw new BadRequestError("Size is to large. Max size allowed: 1Gb");
 	}
 
-	const fileName = `${randomBytes(32).toString("hex")}.${
+	let fileName = `${randomBytes(32).toString("hex")}.${
 		video.type.split("/")[1]
 	}`;
 
-	const filePath = path.join("/tmp", fileName);
-	await Bun.write(filePath, video);
-	const bunFile = Bun.file(filePath);
+	const inputFile = path.join("/tmp", fileName);
 
-	const aspect = await getVideoAspectRatio(filePath);
+	await Bun.write(inputFile, video);
+
+	const outputFile = await processVideoForFastStart(inputFile);
+	const bunFile = Bun.file(outputFile);
+
+	const { name, ext } = path.parse(outputFile);
+
+	fileName = `${name}${ext}`;
+
+	const aspect = await getVideoAspectRatio(outputFile);
 
 	await cfg.s3Client
 		.file(`${aspect}/${fileName}`)
@@ -58,6 +65,35 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
 	updateVideo(cfg.db, videoMetaData);
 
 	return respondWithJSON(200, videoMetaData);
+}
+
+async function processVideoForFastStart(filePath: string) {
+	const fileData = path.parse(filePath);
+	const processedFile = path.join(
+		fileData.dir,
+		fileData.name + ".processed" + fileData.ext
+	);
+
+	console.log(processedFile);
+
+	const proc = Bun.spawn([
+		"ffmpeg",
+		"-i",
+		filePath,
+		"-movflags",
+		"faststart",
+		"-map_metadata",
+		"0",
+		"-codec",
+		"copy",
+		"-f",
+		"mp4",
+		processedFile,
+	]);
+
+	await proc.exited;
+
+	return processedFile;
 }
 
 async function getVideoAspectRatio(filePath: string) {
