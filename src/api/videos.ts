@@ -6,6 +6,7 @@ import { BadRequestError, UserForbiddenError } from "./errors";
 import { getBearerToken, validateJWT } from "../auth";
 import { getVideo, updateVideo } from "../db/videos";
 import path from "path";
+import { processVideoForFastStart, getVideoAspectRatio } from "./utils";
 
 export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
 	const MAX_VIDEO_SIZE = 1 << 30;
@@ -54,91 +55,18 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
 	fileName = `${name}${ext}`;
 
 	const aspect = await getVideoAspectRatio(outputFile);
+	const videoUrl = `${aspect}/${fileName}`;
 
-	await cfg.s3Client
-		.file(`${aspect}/${fileName}`)
-		.write(bunFile, { type: video.type });
+	// await cfg.s3Client.file(videoUrl).write(bunFile, { type: video.type });
 
-	const videoUrl = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${aspect}/${fileName}`;
-	console.log(videoUrl);
-	videoMetaData.videoURL = videoUrl;
+	// const videoUrl =
+	// 	"portrait/68152fd6f36cc5fe984cfea2c5434cbc071ac2230d05e78f1cc244fb120f2302.processed.mp4";
+
+	videoMetaData.videoURL = cfg.s3CfDistribution + "/" + videoUrl;
+
+	console.log(videoMetaData.videoURL);
+
 	updateVideo(cfg.db, videoMetaData);
 
 	return respondWithJSON(200, videoMetaData);
-}
-
-async function processVideoForFastStart(filePath: string) {
-	const fileData = path.parse(filePath);
-	const processedFile = path.join(
-		fileData.dir,
-		fileData.name + ".processed" + fileData.ext
-	);
-
-	console.log(processedFile);
-
-	const proc = Bun.spawn([
-		"ffmpeg",
-		"-i",
-		filePath,
-		"-movflags",
-		"faststart",
-		"-map_metadata",
-		"0",
-		"-codec",
-		"copy",
-		"-f",
-		"mp4",
-		processedFile,
-	]);
-
-	await proc.exited;
-
-	return processedFile;
-}
-
-async function getVideoAspectRatio(filePath: string) {
-	const process = Bun.spawn(
-		[
-			"ffprobe",
-			"-v",
-			"error",
-			"-select_streams",
-			"v:0",
-			"-show_entries",
-			"stream=width,height",
-			"-of",
-			"json",
-			filePath,
-		],
-		{
-			stdout: "pipe",
-			stderr: "inherit",
-		}
-	);
-
-	if ((await process.exited) !== 0) {
-		throw new Error("process failed");
-	}
-
-	const result = await new Response(process.stdout).json();
-
-	const { width, height } = result.streams[0];
-
-	// landscape = 16 : 9 		portrait = 9 : 16
-	// video = 1280 : 720		video = 720 : 1280
-	// range = (1.60, 1.80)		range = (0.5, 0.6)
-
-	const ratio = width / height;
-
-	let aspectRatio = "other";
-
-	if (ratio > 1.6 && ratio < 1.8) {
-		aspectRatio = "landscape";
-	}
-
-	if (ratio > 0.5 && ratio < 0.6) {
-		aspectRatio = "portrait";
-	}
-
-	return aspectRatio;
 }
